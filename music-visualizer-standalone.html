@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Visualizer - Real-time Audio Analysis</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #0a0a0a;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        #app-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #start-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            color: white;
+        }
+
+        #start-overlay.hidden {
+            display: none;
+        }
+
+        #start-btn {
+            padding: 20px 40px;
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 50px;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 20px;
+        }
+
+        #start-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+        }
+
+        #controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+
+        .control-btn {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 25px;
+            color: white;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        #debug-info {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+            font-family: monospace;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="start-overlay">
+        <h1>Music Visualizer</h1>
+        <p>Real-time audio analysis with frequency band isolation</p>
+        <button id="start-btn">Start Visualization</button>
+        <p style="margin-top: 20px; opacity: 0.6; font-size: 0.9rem;">
+            Click to enable microphone access
+        </p>
+    </div>
+
+    <div id="app-container"></div>
+
+    <div id="controls" class="hidden">
+        <button class="control-btn" id="toggle-drums">Drums</button>
+        <button class="control-btn" id="toggle-vocals">Vocals</button>
+        <button class="control-btn" id="toggle-bass">Bass</button>
+        <button class="control-btn" id="toggle-highs">Highs</button>
+    </div>
+
+    <div id="debug-info"></div>
+
+    <!-- p5.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <!-- p5.sound for audio analysis -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+
+    <script>
+// ============================================================================
+// ObjectPool.js - Memory-efficient object pooling system
+// ============================================================================
+
+class ObjectPool {
+    constructor(factory, initialSize = 50, maxSize = 500) {
+        this.factory = factory;
+        this.maxSize = maxSize;
+        this.pool = [];
+        this.activeCount = 0;
+
+        for (let i = 0; i < initialSize; i++) {
+            this.pool.push(this.factory());
+        }
+    }
+
+    acquire() {
+        this.activeCount++;
+        if (this.pool.length > 0) {
+            return this.pool.pop();
+        }
+        return this.factory();
+    }
+
+    release(obj) {
+        this.activeCount = Math.max(0, this.activeCount - 1);
+        if (this.pool.length < this.maxSize) {
+            if (typeof obj.reset === 'function') {
+                obj.reset();
+            }
+            this.pool.push(obj);
+        }
+    }
+
+    releaseAll(objects) {
+        for (let i = 0; i < objects.length; i++) {
+            this.release(objects[i]);
+        }
+    }
+
+    getStats() {
+        return {
+            available: this.pool.length,
+            active: this.activeCount,
+            maxSize: this.maxSize
+        };
+    }
+
+    clear() {
+        this.pool.length = 0;
+        this.activeCount = 0;
+    }
+}
+
+class Particle {
+    constructor() {
+        this.reset();
+    }
+
+    reset() {
+        this.x = 0;
+        this.y = 0;
+        this.vx = 0;
+        this.vy = 0;
+        this.life = 1;
+        this.maxLife = 1;
+        this.size = 5;
+        this.color = { r: 255, g: 255, b: 255, a: 255 };
+        this.active = false;
+    }
+
+    init(x, y, vx, vy, life, size, color) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.life = life;
+        this.maxLife = life;
+        this.size = size;
+        this.color = color;
+        this.active = true;
+    }
+
+    update(deltaTime = 1) {
+        if (!this.active) return false;
+        this.x += this.vx * deltaTime;
+        this.y += this.vy * deltaTime;
+        this.life -= deltaTime * 0.016;
+        if (this.life <= 0) {
+            this.active = false;
+            return false;
+        }
+        return true;
+    }
+
+    draw(p) {
+        if (!this.active) return;
+        const alpha = (this.life / this.maxLife) * this.color.a;
+        p.noStroke();
+        p.fill(this.color.r, this.color.g, this.color.b, alpha);
+        p.ellipse(this.x, this.y, this.size * (this.life / this.maxLife));
+    }
+}
+
+class VisualizerBar {
+    constructor() {
+        this.reset();
+    }
+
+    reset() {
+        this.x = 0;
+        this.y = 0;
+        this.width = 10;
+        this.height = 0;
+        this.targetHeight = 0;
+        this.color = { r: 255, g: 255, b: 255 };
+        this.smoothing = 0.3;
+    }
+
+    init(x, y, width, color) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.color = color;
+        this.height = 0;
+        this.targetHeight = 0;
+    }
+
+    update(targetHeight) {
+        this.targetHeight = targetHeight;
+        this.height += (this.targetHeight - this.height) * this.smoothing;
+    }
+
+    draw(p) {
+        p.noStroke();
+        p.fill(this.color.r, this.color.g, this.color.b);
+        p.rect(this.x, this.y - this.height, this.width, this.height, 2);
+    }
+}
+
+const particlePool = new ObjectPool(() => new Particle(), 100, 1000);
+const barPool = new ObjectPool(() => new VisualizerBar(), 64, 256);
+
+// ============================================================================
+// MemoryManager.js - Centralized memory management
+// ============================================================================
+
+class MemoryManager {
+    constructor() {
+        this.pools = new Map();
+        this.cleanupCallbacks = [];
+        this.lastCleanup = 0;
+        this.cleanupInterval = 30000;
+        this.memoryWarningThreshold = 0.8;
+        this.isMonitoring = false;
+        this.tempArrays = {
+            float32_256: new Float32Array(256),
+            float32_512: new Float32Array(512),
+            float32_1024: new Float32Array(1024)
+        };
+        this.colorCache = new Map();
+    }
+
+    registerPool(name, pool) {
+        this.pools.set(name, pool);
+    }
+
+    getTempFloat32Array(size) {
+        const key = `float32_${size}`;
+        if (this.tempArrays[key]) {
+            return this.tempArrays[key];
+        }
+        this.tempArrays[key] = new Float32Array(size);
+        return this.tempArrays[key];
+    }
+
+    getColor(r, g, b, a = 255) {
+        const key = `${r},${g},${b},${a}`;
+        if (!this.colorCache.has(key)) {
+            if (this.colorCache.size > 1000) {
+                const firstKey = this.colorCache.keys().next().value;
+                this.colorCache.delete(firstKey);
+            }
+            this.colorCache.set(key, { r, g, b, a });
+        }
+        return this.colorCache.get(key);
+    }
+
+    onCleanup(callback) {
+        this.cleanupCallbacks.push(callback);
+    }
+
+    suggestGC() {
+        for (const key in this.tempArrays) {
+            this.tempArrays[key].fill(0);
+        }
+    }
+
+    update(currentTime) {
+        if (currentTime - this.lastCleanup > this.cleanupInterval) {
+            this.performCleanup();
+            this.lastCleanup = currentTime;
+        }
+    }
+
+    performCleanup() {
+        for (const callback of this.cleanupCallbacks) {
+            try {
+                callback();
+            } catch (e) {
+                console.warn('Cleanup callback error:', e);
+            }
+        }
+        if (window.DEBUG_MODE) {
+            this.logStats();
+        }
+    }
+
+    getStats() {
+        const stats = {
+            pools: {},
+            colorCacheSize: this.colorCache.size
+        };
+        this.pools.forEach((pool, name) => {
+            stats.pools[name] = pool.getStats();
+        });
+        if (performance.memory) {
+            stats.heapUsed = performance.memory.usedJSHeapSize;
+            stats.heapTotal = performance.memory.totalJSHeapSize;
+            stats.heapLimit = performance.memory.jsHeapSizeLimit;
+            stats.heapUsagePercent = (stats.heapUsed / stats.heapLimit) * 100;
+        }
+        return stats;
+    }
+
+    logStats() {
+        const stats = this.getStats();
+        console.log('Memory Stats:', stats);
+    }
+
+    isMemoryCritical() {
+        if (performance.memory) {
+            const usage = performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
+            return usage > this.memoryWarningThreshold;
+        }
+        return false;
+    }
+
+    startMonitoring(interval = 5000) {
+        if (this.isMonitoring) return;
+        this.isMonitoring = true;
+        this.monitoringInterval = setInterval(() => {
+            if (this.isMemoryCritical()) {
+                console.warn('Memory usage critical, forcing cleanup');
+                this.performCleanup();
+                this.suggestGC();
+            }
+        }, interval);
+    }
+
+    stopMonitoring() {
+        if (this.monitoringInterval) {
+            clearInterval(this.monitoringInterval);
+            this.isMonitoring = false;
+        }
+    }
+
+    dispose() {
+        this.stopMonitoring();
+        this.pools.forEach(pool => pool.clear());
+        this.pools.clear();
+        this.colorCache.clear();
+        this.cleanupCallbacks.length = 0;
+    }
+}
+
+const memoryManager = new MemoryManager();
+memoryManager.registerPool('particles', particlePool);
+memoryManager.registerPool('bars', barPool);
+
+// ============================================================================
+// FrequencyBands.js - Frequency range definitions
+// ============================================================================
+
+const FrequencyBands = {
+    SUB_BASS: { name: 'Sub Bass', min: 20, max: 60, color: { r: 128, g: 0, b: 255 } },
+    BASS: { name: 'Bass', min: 60, max: 250, color: { r: 255, g: 0, b: 100 } },
+    DRUMS_LOW: { name: 'Drums Low', min: 60, max: 200, color: { r: 255, g: 50, b: 50 } },
+    DRUMS_MID: { name: 'Drums Mid', min: 200, max: 2000, color: { r: 255, g: 100, b: 50 } },
+    DRUMS_HIGH: { name: 'Drums High', min: 2000, max: 8000, color: { r: 255, g: 200, b: 50 } },
+    VOCALS_LOW: { name: 'Vocals Low', min: 80, max: 300, color: { r: 50, g: 200, b: 255 } },
+    VOCALS_MID: { name: 'Vocals Mid', min: 300, max: 2000, color: { r: 100, g: 150, b: 255 } },
+    VOCALS_HIGH: { name: 'Vocals High', min: 2000, max: 8000, color: { r: 150, g: 100, b: 255 } },
+    INSTRUMENTS_LOW: { name: 'Instruments Low', min: 80, max: 400, color: { r: 50, g: 255, b: 100 } },
+    INSTRUMENTS_MID: { name: 'Instruments Mid', min: 400, max: 2000, color: { r: 100, g: 255, b: 150 } },
+    INSTRUMENTS_HIGH: { name: 'Instruments High', min: 2000, max: 6000, color: { r: 150, g: 255, b: 200 } },
+    AIR: { name: 'Air', min: 8000, max: 20000, color: { r: 255, g: 255, b: 255 } }
+};
+
+const VisualizerGroups = {
+    DRUMS: {
+        name: 'Drums',
+        bands: ['DRUMS_LOW', 'DRUMS_MID', 'DRUMS_HIGH'],
+        weights: [0.5, 0.3, 0.2],
+        primaryColor: { r: 255, g: 80, b: 50 },
+        accentColor: { r: 255, g: 150, b: 100 }
+    },
+    VOCALS: {
+        name: 'Vocals',
+        bands: ['VOCALS_LOW', 'VOCALS_MID', 'VOCALS_HIGH'],
+        weights: [0.2, 0.5, 0.3],
+        primaryColor: { r: 100, g: 150, b: 255 },
+        accentColor: { r: 180, g: 200, b: 255 }
+    },
+    BASS: {
+        name: 'Bass',
+        bands: ['SUB_BASS', 'BASS'],
+        weights: [0.4, 0.6],
+        primaryColor: { r: 200, g: 0, b: 200 },
+        accentColor: { r: 255, g: 100, b: 255 }
+    },
+    HIGHS: {
+        name: 'Highs',
+        bands: ['INSTRUMENTS_HIGH', 'AIR'],
+        weights: [0.6, 0.4],
+        primaryColor: { r: 100, g: 255, b: 200 },
+        accentColor: { r: 200, g: 255, b: 255 }
+    }
+};
+
+function getBinRange(band, sampleRate = 44100, fftSize = 1024) {
+    const binFrequency = sampleRate / fftSize;
+    return {
+        start: Math.floor(band.min / binFrequency),
+        end: Math.ceil(band.max / binFrequency)
+    };
+}
+
+function calculateAllBinRanges(sampleRate = 44100, fftSize = 1024) {
+    const ranges = new Map();
+    for (const [name, band] of Object.entries(FrequencyBands)) {
+        ranges.set(name, getBinRange(band, sampleRate, fftSize));
+    }
+    return ranges;
+}
+
+// ============================================================================
+// AudioAnalyzer.js - Real-time audio analysis
+// ============================================================================
+
+class AudioAnalyzer {
+    constructor(fftSize = 1024, smoothing = 0.8) {
+        this.fftSize = fftSize;
+        this.smoothing = smoothing;
+        this.fft = null;
+        this.mic = null;
+        this.isInitialized = false;
+        this.isListening = false;
+        this.binRanges = null;
+        this.energyCache = {
+            drums: { low: 0, mid: 0, high: 0, combined: 0 },
+            vocals: { low: 0, mid: 0, high: 0, combined: 0 },
+            bass: { sub: 0, main: 0, combined: 0 },
+            highs: { instruments: 0, air: 0, combined: 0 }
+        };
+        this.smoothedEnergy = { drums: 0, vocals: 0, bass: 0, highs: 0 };
+        this.peakThreshold = 0.7;
+        this.peakDecay = 0.95;
+        this.peaks = {
+            drums: { value: 0, isPeak: false },
+            vocals: { value: 0, isPeak: false },
+            bass: { value: 0, isPeak: false },
+            highs: { value: 0, isPeak: false }
+        };
+        this.historySize = 43;
+        this.historyIndex = 0;
+        this.energyHistory = {
+            drums: new Float32Array(this.historySize),
+            bass: new Float32Array(this.historySize)
+        };
+    }
+
+    async init() {
+        if (this.isInitialized) return true;
+        try {
+            this.fft = new p5.FFT(this.smoothing, this.fftSize);
+            this.mic = new p5.AudioIn();
+            this.binRanges = calculateAllBinRanges(getAudioContext().sampleRate, this.fftSize);
+            this.isInitialized = true;
+            console.log('AudioAnalyzer initialized');
+            return true;
+        } catch (error) {
+            console.error('Failed to initialize AudioAnalyzer:', error);
+            return false;
+        }
+    }
+
+    async startListening() {
+        if (!this.isInitialized) {
+            const success = await this.init();
+            if (!success) return false;
+        }
+        try {
+            await this.mic.start();
+            this.fft.setInput(this.mic);
+            this.isListening = true;
+            console.log('Started listening to microphone');
+            return true;
+        } catch (error) {
+            console.error('Failed to start microphone:', error);
+            return false;
+        }
+    }
+
+    stopListening() {
+        if (this.mic && this.isListening) {
+            this.mic.stop();
+            this.isListening = false;
+        }
+    }
+
+    getBandEnergy(bandName) {
+        if (!this.fft || !this.binRanges) return 0;
+        const range = this.binRanges.get(bandName);
+        if (!range) return 0;
+        const spectrum = this.fft.analyze();
+        let sum = 0;
+        const count = range.end - range.start;
+        for (let i = range.start; i < range.end && i < spectrum.length; i++) {
+            sum += spectrum[i];
+        }
+        return count > 0 ? sum / count : 0;
+    }
+
+    update() {
+        if (!this.fft || !this.isListening) return;
+        const spectrum = this.fft.analyze();
+
+        this.energyCache.drums.low = this._getAverageEnergy(spectrum, 'DRUMS_LOW');
+        this.energyCache.drums.mid = this._getAverageEnergy(spectrum, 'DRUMS_MID');
+        this.energyCache.drums.high = this._getAverageEnergy(spectrum, 'DRUMS_HIGH');
+        this.energyCache.drums.combined = this._calculateWeightedEnergy(
+            [this.energyCache.drums.low, this.energyCache.drums.mid, this.energyCache.drums.high],
+            VisualizerGroups.DRUMS.weights
+        );
+
+        this.energyCache.vocals.low = this._getAverageEnergy(spectrum, 'VOCALS_LOW');
+        this.energyCache.vocals.mid = this._getAverageEnergy(spectrum, 'VOCALS_MID');
+        this.energyCache.vocals.high = this._getAverageEnergy(spectrum, 'VOCALS_HIGH');
+        this.energyCache.vocals.combined = this._calculateWeightedEnergy(
+            [this.energyCache.vocals.low, this.energyCache.vocals.mid, this.energyCache.vocals.high],
+            VisualizerGroups.VOCALS.weights
+        );
+
+        this.energyCache.bass.sub = this._getAverageEnergy(spectrum, 'SUB_BASS');
+        this.energyCache.bass.main = this._getAverageEnergy(spectrum, 'BASS');
+        this.energyCache.bass.combined = this._calculateWeightedEnergy(
+            [this.energyCache.bass.sub, this.energyCache.bass.main],
+            VisualizerGroups.BASS.weights
+        );
+
+        this.energyCache.highs.instruments = this._getAverageEnergy(spectrum, 'INSTRUMENTS_HIGH');
+        this.energyCache.highs.air = this._getAverageEnergy(spectrum, 'AIR');
+        this.energyCache.highs.combined = this._calculateWeightedEnergy(
+            [this.energyCache.highs.instruments, this.energyCache.highs.air],
+            VisualizerGroups.HIGHS.weights
+        );
+
+        const smoothFactor = 0.3;
+        this.smoothedEnergy.drums += (this.energyCache.drums.combined - this.smoothedEnergy.drums) * smoothFactor;
+        this.smoothedEnergy.vocals += (this.energyCache.vocals.combined - this.smoothedEnergy.vocals) * smoothFactor;
+        this.smoothedEnergy.bass += (this.energyCache.bass.combined - this.smoothedEnergy.bass) * smoothFactor;
+        this.smoothedEnergy.highs += (this.energyCache.highs.combined - this.smoothedEnergy.highs) * smoothFactor;
+
+        this._updateHistory();
+        this._detectPeaks();
+    }
+
+    _getAverageEnergy(spectrum, bandName) {
+        const range = this.binRanges.get(bandName);
+        if (!range) return 0;
+        let sum = 0;
+        let count = 0;
+        for (let i = range.start; i < range.end && i < spectrum.length; i++) {
+            sum += spectrum[i];
+            count++;
+        }
+        return count > 0 ? sum / count / 255 : 0;
+    }
+
+    _calculateWeightedEnergy(energies, weights) {
+        let sum = 0;
+        for (let i = 0; i < energies.length; i++) {
+            sum += energies[i] * weights[i];
+        }
+        return sum;
+    }
+
+    _updateHistory() {
+        this.energyHistory.drums[this.historyIndex] = this.energyCache.drums.combined;
+        this.energyHistory.bass[this.historyIndex] = this.energyCache.bass.combined;
+        this.historyIndex = (this.historyIndex + 1) % this.historySize;
+    }
+
+    _detectPeaks() {
+        const categories = ['drums', 'vocals', 'bass', 'highs'];
+        for (const cat of categories) {
+            const current = this.smoothedEnergy[cat];
+            const peak = this.peaks[cat];
+            peak.value *= this.peakDecay;
+            if (current > peak.value && current > this.peakThreshold) {
+                peak.value = current;
+                peak.isPeak = true;
+            } else {
+                peak.isPeak = false;
+            }
+        }
+    }
+
+    getEnergies() {
+        return {
+            drums: this.smoothedEnergy.drums,
+            vocals: this.smoothedEnergy.vocals,
+            bass: this.smoothedEnergy.bass,
+            highs: this.smoothedEnergy.highs,
+            raw: this.energyCache
+        };
+    }
+
+    getPeaks() {
+        return this.peaks;
+    }
+
+    getSpectrum() {
+        return this.fft ? this.fft.analyze() : null;
+    }
+
+    getWaveform() {
+        return this.fft ? this.fft.waveform() : null;
+    }
+
+    dispose() {
+        this.stopListening();
+        this.fft = null;
+        this.mic = null;
+        this.isInitialized = false;
+    }
+}
+
+// ============================================================================
+// BaseVisualizer.js - Abstract base class for visualizers
+// ============================================================================
+
+class BaseVisualizer {
+    constructor(name, color, accentColor) {
+        this.name = name;
+        this.color = color;
+        this.accentColor = accentColor;
+        this.enabled = true;
+        this.opacity = 1;
+        this.x = 0;
+        this.y = 0;
+        this.width = 100;
+        this.height = 100;
+        this.energy = 0;
+        this.smoothedEnergy = 0;
+        this.smoothingFactor = 0.2;
+        this.activeParticles = [];
+        this.maxParticles = 50;
+        this.frameSkip = 0;
+        this.frameCounter = 0;
+    }
+
+    setBounds(x, y, width, height) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+    }
+
+    update(energy, peaks, deltaTime) {
+        if (!this.enabled) return;
+        this.frameCounter++;
+        if (this.frameSkip > 0 && this.frameCounter % this.frameSkip !== 0) {
+            return;
+        }
+        this.energy = energy;
+        this.smoothedEnergy += (energy - this.smoothedEnergy) * this.smoothingFactor;
+        this._updateParticles(deltaTime);
+        if (peaks && peaks.isPeak) {
+            this._onPeak(energy);
+        }
+        this.onUpdate(energy, peaks, deltaTime);
+    }
+
+    onUpdate(energy, peaks, deltaTime) {}
+
+    _onPeak(energy) {
+        const particleCount = Math.floor(energy * 5);
+        for (let i = 0; i < particleCount && this.activeParticles.length < this.maxParticles; i++) {
+            this._spawnParticle();
+        }
+    }
+
+    _spawnParticle() {
+        const particle = particlePool.acquire();
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 3;
+        particle.init(
+            this.x + this.width / 2,
+            this.y + this.height / 2,
+            Math.cos(angle) * speed,
+            Math.sin(angle) * speed,
+            1 + Math.random(),
+            3 + Math.random() * 5,
+            { ...this.accentColor, a: 200 }
+        );
+        this.activeParticles.push(particle);
+    }
+
+    _updateParticles(deltaTime) {
+        for (let i = this.activeParticles.length - 1; i >= 0; i--) {
+            const particle = this.activeParticles[i];
+            if (!particle.update(deltaTime)) {
+                particlePool.release(particle);
+                this.activeParticles.splice(i, 1);
+            }
+        }
+    }
+
+    draw(p) {
+        if (!this.enabled) return;
+        p.push();
+        if (this.opacity < 1) {
+            p.drawingContext.globalAlpha = this.opacity;
+        }
+        this.drawBackground(p);
+        this.drawVisualization(p);
+        this.drawParticles(p);
+        this.drawLabel(p);
+        p.pop();
+    }
+
+    drawBackground(p) {
+        p.noStroke();
+        p.fill(20, 20, 25, 150);
+        p.rect(this.x, this.y, this.width, this.height, 8);
+    }
+
+    drawVisualization(p) {}
+
+    drawParticles(p) {
+        for (const particle of this.activeParticles) {
+            particle.draw(p);
+        }
+    }
+
+    drawLabel(p) {
+        p.fill(255, 255, 255, 150);
+        p.noStroke();
+        p.textSize(12);
+        p.textAlign(p.LEFT, p.TOP);
+        p.text(this.name, this.x + 10, this.y + 10);
+        p.fill(this.color.r, this.color.g, this.color.b, 200);
+        p.text(Math.round(this.smoothedEnergy * 100) + '%', this.x + 10, this.y + 25);
+    }
+
+    toggle() {
+        this.enabled = !this.enabled;
+        return this.enabled;
+    }
+
+    dispose() {
+        for (const particle of this.activeParticles) {
+            particlePool.release(particle);
+        }
+        this.activeParticles.length = 0;
+    }
+}
+
+// ============================================================================
+// DrumVisualizer.js - Drum/percussion visualization
+// ============================================================================
+
+class DrumVisualizer extends BaseVisualizer {
+    constructor() {
+        super('Drums', VisualizerGroups.DRUMS.primaryColor, VisualizerGroups.DRUMS.accentColor);
+        this.pulseSize = 0;
+        this.targetPulseSize = 0;
+        this.ripples = [];
+        this.maxRipples = 5;
+        for (let i = 0; i < this.maxRipples; i++) {
+            this.ripples.push({ active: false, x: 0, y: 0, size: 0, maxSize: 0, alpha: 0 });
+        }
+        this.bars = [];
+        this.barCount = 8;
+    }
+
+    onUpdate(energy, peaks, deltaTime) {
+        this.targetPulseSize = energy * (this.height * 0.4);
+        this.pulseSize += (this.targetPulseSize - this.pulseSize) * 0.3;
+        if (peaks && peaks.isPeak && energy > 0.5) {
+            this._triggerRipple(energy);
+        }
+        for (const ripple of this.ripples) {
+            if (ripple.active) {
+                ripple.size += (ripple.maxSize - ripple.size) * 0.1;
+                ripple.alpha *= 0.92;
+                if (ripple.alpha < 5) {
+                    ripple.active = false;
+                }
+            }
+        }
+    }
+
+    _triggerRipple(energy) {
+        for (const ripple of this.ripples) {
+            if (!ripple.active) {
+                ripple.active = true;
+                ripple.x = this.x + this.width / 2;
+                ripple.y = this.y + this.height / 2;
+                ripple.size = this.pulseSize;
+                ripple.maxSize = this.pulseSize + energy * 100;
+                ripple.alpha = 200;
+                break;
+            }
+        }
+    }
+
+    drawVisualization(p) {
+        const centerX = this.x + this.width / 2;
+        const centerY = this.y + this.height / 2;
+
+        for (const ripple of this.ripples) {
+            if (ripple.active) {
+                p.noFill();
+                p.stroke(this.accentColor.r, this.accentColor.g, this.accentColor.b, ripple.alpha);
+                p.strokeWeight(2);
+                p.ellipse(ripple.x, ripple.y, ripple.size, ripple.size);
+            }
+        }
+
+        p.noStroke();
+        const glowSize = this.pulseSize * 1.3;
+        p.fill(this.color.r, this.color.g, this.color.b, 30);
+        p.ellipse(centerX, centerY, glowSize, glowSize);
+        p.fill(this.color.r, this.color.g, this.color.b, 150 + this.smoothedEnergy * 100);
+        p.ellipse(centerX, centerY, this.pulseSize, this.pulseSize);
+        const coreSize = this.pulseSize * 0.3;
+        p.fill(255, 255, 255, 100 + this.smoothedEnergy * 150);
+        p.ellipse(centerX, centerY, coreSize, coreSize);
+        this._drawFrequencyBars(p, centerX, centerY);
+    }
+
+    _drawFrequencyBars(p, centerX, centerY) {
+        const radius = this.pulseSize * 0.6 + 20;
+        const barWidth = 8;
+        const maxBarHeight = 40;
+        for (let i = 0; i < this.barCount; i++) {
+            const angle = (i / this.barCount) * Math.PI * 2 - Math.PI / 2;
+            const barHeight = this.smoothedEnergy * maxBarHeight * (0.5 + Math.random() * 0.5);
+            const x1 = centerX + Math.cos(angle) * radius;
+            const y1 = centerY + Math.sin(angle) * radius;
+            const x2 = centerX + Math.cos(angle) * (radius + barHeight);
+            const y2 = centerY + Math.sin(angle) * (radius + barHeight);
+            p.stroke(this.accentColor.r, this.accentColor.g, this.accentColor.b, 200);
+            p.strokeWeight(barWidth);
+            p.line(x1, y1, x2, y2);
+        }
+    }
+}
+
+// ============================================================================
+// VocalVisualizer.js - Vocal frequency visualization
+// ============================================================================
+
+class VocalVisualizer extends BaseVisualizer {
+    constructor() {
+        super('Vocals', VisualizerGroups.VOCALS.primaryColor, VisualizerGroups.VOCALS.accentColor);
+        this.wavePhase = 0;
+        this.waveAmplitude = 0;
+        this.targetAmplitude = 0;
+        this.waveLayers = 3;
+        this.wavePoints = 64;
+        this.waveData = new Float32Array(this.wavePoints);
+        this.smoothingFactor = 0.15;
+    }
+
+    onUpdate(energy, peaks, deltaTime) {
+        this.wavePhase += 0.05 + energy * 0.1;
+        this.targetAmplitude = energy * (this.height * 0.35);
+        this.waveAmplitude += (this.targetAmplitude - this.waveAmplitude) * this.smoothingFactor;
+        for (let i = 0; i < this.wavePoints; i++) {
+            const targetValue = Math.sin(this.wavePhase + i * 0.15) * this.waveAmplitude;
+            this.waveData[i] += (targetValue - this.waveData[i]) * 0.2;
+        }
+    }
+
+    drawVisualization(p) {
+        const centerY = this.y + this.height / 2;
+        for (let layer = 0; layer < this.waveLayers; layer++) {
+            const layerOffset = (layer - 1) * 15;
+            const layerAlpha = 200 - layer * 50;
+            const layerPhaseOffset = layer * 0.5;
+            this._drawWaveLayer(p, centerY + layerOffset, layerAlpha, layerPhaseOffset, layer);
+        }
+        this._drawCenterIndicator(p, centerY);
+    }
+
+    _drawWaveLayer(p, baseY, alpha, phaseOffset, layerIndex) {
+        const stepX = this.width / (this.wavePoints - 1);
+        p.noFill();
+        p.strokeWeight(3 - layerIndex * 0.5);
+        p.beginShape();
+        for (let i = 0; i < this.wavePoints; i++) {
+            const x = this.x + i * stepX;
+            const waveValue = this.waveData[i] * Math.sin(this.wavePhase * 0.5 + phaseOffset + i * 0.1);
+            const y = baseY + waveValue;
+            const colorProgress = i / this.wavePoints;
+            const r = p.lerp(this.color.r, this.accentColor.r, colorProgress);
+            const g = p.lerp(this.color.g, this.accentColor.g, colorProgress);
+            const b = p.lerp(this.color.b, this.accentColor.b, colorProgress);
+            p.stroke(r, g, b, alpha);
+            p.curveVertex(x, y);
+        }
+        p.endShape();
+        if (layerIndex === 0) {
+            this._drawPeakGlows(p, baseY, phaseOffset);
+        }
+    }
+
+    _drawPeakGlows(p, baseY, phaseOffset) {
+        const stepX = this.width / (this.wavePoints - 1);
+        p.noStroke();
+        for (let i = 0; i < this.wavePoints; i += 8) {
+            const x = this.x + i * stepX;
+            const waveValue = this.waveData[i] * Math.sin(this.wavePhase * 0.5 + phaseOffset + i * 0.1);
+            const y = baseY + waveValue;
+            const glowSize = Math.abs(waveValue) * 0.15 + 5;
+            p.fill(this.accentColor.r, this.accentColor.g, this.accentColor.b, 30);
+            p.ellipse(x, y, glowSize * 2, glowSize * 2);
+            p.fill(255, 255, 255, 100 + this.smoothedEnergy * 100);
+            p.ellipse(x, y, glowSize * 0.5, glowSize * 0.5);
+        }
+    }
+
+    _drawCenterIndicator(p, centerY) {
+        const orbSize = 10 + this.smoothedEnergy * 20;
+        const orbX = this.x + this.width / 2;
+        p.noStroke();
+        p.fill(this.accentColor.r, this.accentColor.g, this.accentColor.b, 50);
+        p.ellipse(orbX, centerY, orbSize * 2, orbSize * 2);
+        p.fill(this.color.r, this.color.g, this.color.b, 200);
+        p.ellipse(orbX, centerY, orbSize, orbSize);
+        p.fill(255, 255, 255, 150);
+        p.ellipse(orbX, centerY, orbSize * 0.4, orbSize * 0.4);
+    }
+}
+
+// ============================================================================
+// BassVisualizer.js - Bass/sub-bass visualization
+// ============================================================================
+
+class BassVisualizer extends BaseVisualizer {
+    constructor() {
+        super('Bass', VisualizerGroups.BASS.primaryColor, VisualizerGroups.BASS.accentColor);
+        this.pulseScale = 1;
+        this.targetScale = 1;
+        this.rumbleOffset = 0;
+        this.ringCount = 5;
+        this.ringPhases = new Float32Array(this.ringCount);
+        for (let i = 0; i < this.ringCount; i++) {
+            this.ringPhases[i] = i * 0.5;
+        }
+        this.barCount = 16;
+        this.barHeights = new Float32Array(this.barCount);
+        this.targetBarHeights = new Float32Array(this.barCount);
+    }
+
+    onUpdate(energy, peaks, deltaTime) {
+        this.targetScale = 1 + energy * 0.5;
+        this.pulseScale += (this.targetScale - this.pulseScale) * 0.2;
+        this.rumbleOffset = Math.sin(Date.now() * 0.01) * energy * 3;
+        for (let i = 0; i < this.ringCount; i++) {
+            this.ringPhases[i] += 0.02 + energy * 0.05;
+        }
+        for (let i = 0; i < this.barCount; i++) {
+            const frequencyWeight = 1 - (i / this.barCount) * 0.5;
+            this.targetBarHeights[i] = energy * frequencyWeight * (0.7 + Math.random() * 0.3);
+            this.barHeights[i] += (this.targetBarHeights[i] - this.barHeights[i]) * 0.3;
+        }
+    }
+
+    drawVisualization(p) {
+        const centerX = this.x + this.width / 2 + this.rumbleOffset;
+        const centerY = this.y + this.height / 2;
+        this._drawRings(p, centerX, centerY);
+        this._drawBars(p);
+        this._drawCenterMass(p, centerX, centerY);
+    }
+
+    _drawRings(p, centerX, centerY) {
+        const baseRadius = Math.min(this.width, this.height) * 0.3;
+        p.noFill();
+        p.strokeWeight(2);
+        for (let i = 0; i < this.ringCount; i++) {
+            const phase = this.ringPhases[i];
+            const radiusOffset = Math.sin(phase) * 10;
+            const radius = (baseRadius + i * 15 + radiusOffset) * this.pulseScale;
+            const alpha = 150 - i * 25;
+            const t = i / this.ringCount;
+            const r = p.lerp(this.color.r, this.accentColor.r, t);
+            const g = p.lerp(this.color.g, this.accentColor.g, t);
+            const b = p.lerp(this.color.b, this.accentColor.b, t);
+            p.stroke(r, g, b, alpha * this.smoothedEnergy);
+            p.ellipse(centerX, centerY, radius * 2, radius * 2);
+        }
+    }
+
+    _drawBars(p) {
+        const barWidth = (this.width - 40) / this.barCount;
+        const maxHeight = this.height * 0.4;
+        const baseY = this.y + this.height - 20;
+        p.noStroke();
+        for (let i = 0; i < this.barCount; i++) {
+            const x = this.x + 20 + i * barWidth;
+            const height = this.barHeights[i] * maxHeight;
+            const t = i / this.barCount;
+            const r = p.lerp(this.color.r, this.accentColor.r, t);
+            const g = p.lerp(this.color.g, this.accentColor.g, t);
+            const b = p.lerp(this.color.b, this.accentColor.b, t);
+            p.fill(r, g, b, 50);
+            p.rect(x - 2, baseY - height - 5, barWidth - 2, height + 10, 2);
+            p.fill(r, g, b, 200);
+            p.rect(x, baseY - height, barWidth - 4, height, 2);
+            p.fill(255, 255, 255, 50);
+            p.rect(x, baseY - height, (barWidth - 4) * 0.3, height, 2);
+        }
+    }
+
+    _drawCenterMass(p, centerX, centerY) {
+        const size = 30 + this.smoothedEnergy * 40;
+        p.noStroke();
+        p.fill(this.accentColor.r, this.accentColor.g, this.accentColor.b, 30);
+        p.ellipse(centerX, centerY, size * 2, size * 2);
+        p.fill(this.color.r, this.color.g, this.color.b, 180);
+        p.beginShape();
+        const points = 32;
+        for (let i = 0; i < points; i++) {
+            const angle = (i / points) * Math.PI * 2;
+            const deform = 1 + Math.sin(angle * 4 + Date.now() * 0.005) * this.smoothedEnergy * 0.2;
+            const r = size * deform;
+            const x = centerX + Math.cos(angle) * r;
+            const y = centerY + Math.sin(angle) * r;
+            p.curveVertex(x, y);
+        }
+        p.endShape(p.CLOSE);
+        p.fill(255, 255, 255, 80);
+        p.ellipse(centerX, centerY, size * 0.3, size * 0.3);
+    }
+}
+
+// ============================================================================
+// HighsVisualizer.js - High frequency visualization
+// ============================================================================
+
+class HighsVisualizer extends BaseVisualizer {
+    constructor() {
+        super('Highs', VisualizerGroups.HIGHS.primaryColor, VisualizerGroups.HIGHS.accentColor);
+        this.maxParticles = 100;
+        this.starCount = 20;
+        this.stars = [];
+        for (let i = 0; i < this.starCount; i++) {
+            this.stars.push({
+                x: 0, y: 0, size: 0, targetSize: 0, alpha: 0, targetAlpha: 0,
+                twinklePhase: Math.random() * Math.PI * 2,
+                twinkleSpeed: 0.05 + Math.random() * 0.1
+            });
+        }
+        this.connectionDistance = 80;
+        this.shimmerPhase = 0;
+    }
+
+    setBounds(x, y, width, height) {
+        super.setBounds(x, y, width, height);
+        for (let i = 0; i < this.starCount; i++) {
+            this.stars[i].x = x + Math.random() * width;
+            this.stars[i].y = y + Math.random() * height;
+        }
+    }
+
+    onUpdate(energy, peaks, deltaTime) {
+        this.shimmerPhase += 0.03 + energy * 0.05;
+        for (const star of this.stars) {
+            star.twinklePhase += star.twinkleSpeed;
+            const twinkle = (Math.sin(star.twinklePhase) + 1) * 0.5;
+            star.targetSize = (3 + energy * 15) * twinkle;
+            star.size += (star.targetSize - star.size) * 0.2;
+            star.targetAlpha = 50 + energy * 200 * twinkle;
+            star.alpha += (star.targetAlpha - star.alpha) * 0.3;
+            star.x += (Math.random() - 0.5) * energy * 2;
+            star.y += (Math.random() - 0.5) * energy * 2;
+            if (star.x < this.x) star.x = this.x + this.width;
+            if (star.x > this.x + this.width) star.x = this.x;
+            if (star.y < this.y) star.y = this.y + this.height;
+            if (star.y > this.y + this.height) star.y = this.y;
+        }
+        if (peaks && peaks.isPeak && energy > 0.4) {
+            this._spawnSparkles(energy);
+        }
+    }
+
+    _spawnSparkles(energy) {
+        const count = Math.floor(energy * 8);
+        for (let i = 0; i < count && this.activeParticles.length < this.maxParticles; i++) {
+            const particle = particlePool.acquire();
+            const x = this.x + Math.random() * this.width;
+            const y = this.y + Math.random() * this.height;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 0.5 + Math.random() * 2;
+            particle.init(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed,
+                0.5 + Math.random() * 0.5, 2 + Math.random() * 4, { r: 255, g: 255, b: 255, a: 255 });
+            this.activeParticles.push(particle);
+        }
+    }
+
+    drawVisualization(p) {
+        this._drawConnections(p);
+        this._drawStars(p);
+        this._drawShimmer(p);
+    }
+
+    _drawConnections(p) {
+        p.strokeWeight(1);
+        for (let i = 0; i < this.stars.length; i++) {
+            for (let j = i + 1; j < this.stars.length; j++) {
+                const star1 = this.stars[i];
+                const star2 = this.stars[j];
+                const dx = star2.x - star1.x;
+                const dy = star2.y - star1.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < this.connectionDistance) {
+                    const alpha = (1 - dist / this.connectionDistance) * this.smoothedEnergy * 100;
+                    p.stroke(this.accentColor.r, this.accentColor.g, this.accentColor.b, alpha);
+                    p.line(star1.x, star1.y, star2.x, star2.y);
+                }
+            }
+        }
+    }
+
+    _drawStars(p) {
+        p.noStroke();
+        for (const star of this.stars) {
+            if (star.alpha < 5) continue;
+            p.fill(this.accentColor.r, this.accentColor.g, this.accentColor.b, star.alpha * 0.3);
+            p.ellipse(star.x, star.y, star.size * 3, star.size * 3);
+            p.fill(this.color.r, this.color.g, this.color.b, star.alpha);
+            this._drawStar(p, star.x, star.y, star.size, star.size * 0.4, 4);
+            p.fill(255, 255, 255, star.alpha);
+            p.ellipse(star.x, star.y, star.size * 0.3, star.size * 0.3);
+        }
+    }
+
+    _drawStar(p, x, y, radius1, radius2, npoints) {
+        const angle = Math.PI * 2 / npoints;
+        const halfAngle = angle / 2;
+        p.beginShape();
+        for (let a = -Math.PI / 2; a < Math.PI * 1.5; a += angle) {
+            let sx = x + Math.cos(a) * radius1;
+            let sy = y + Math.sin(a) * radius1;
+            p.vertex(sx, sy);
+            sx = x + Math.cos(a + halfAngle) * radius2;
+            sy = y + Math.sin(a + halfAngle) * radius2;
+            p.vertex(sx, sy);
+        }
+        p.endShape(p.CLOSE);
+    }
+
+    _drawShimmer(p) {
+        const waveY = this.y + this.height / 2;
+        const amplitude = this.smoothedEnergy * 20;
+        p.noFill();
+        p.strokeWeight(1);
+        for (let layer = 0; layer < 3; layer++) {
+            const alpha = 100 - layer * 30;
+            const yOffset = layer * 10;
+            p.stroke(this.accentColor.r, this.accentColor.g, this.accentColor.b, alpha * this.smoothedEnergy);
+            p.beginShape();
+            for (let x = this.x; x <= this.x + this.width; x += 5) {
+                const normalizedX = (x - this.x) / this.width;
+                const y = waveY + yOffset + Math.sin(this.shimmerPhase + normalizedX * 10) * amplitude;
+                p.curveVertex(x, y);
+            }
+            p.endShape();
+        }
+    }
+}
+
+// ============================================================================
+// sketch.js - Main p5.js sketch
+// ============================================================================
+
+let audioAnalyzer;
+let visualizers = {};
+let isStarted = false;
+let lastFrameTime = 0;
+let deltaTime = 0;
+
+window.DEBUG_MODE = false;
+
+function setup() {
+    const container = document.getElementById('app-container');
+    const canvas = createCanvas(windowWidth, windowHeight);
+    canvas.parent(container);
+    pixelDensity(1);
+    frameRate(60);
+
+    audioAnalyzer = new AudioAnalyzer(1024, 0.8);
+
+    visualizers = {
+        drums: new DrumVisualizer(),
+        vocals: new VocalVisualizer(),
+        bass: new BassVisualizer(),
+        highs: new HighsVisualizer()
+    };
+
+    layoutVisualizers();
+    setupControls();
+    memoryManager.startMonitoring(10000);
+
+    memoryManager.onCleanup(() => {
+        for (const viz of Object.values(visualizers)) {
+            if (viz.activeParticles) {
+                viz.activeParticles = viz.activeParticles.filter(p => p.active);
+            }
+        }
+    });
+
+    console.log('Music Visualizer initialized');
+}
+
+function layoutVisualizers() {
+    const padding = 20;
+    const halfWidth = (width - padding * 3) / 2;
+    const halfHeight = (height - padding * 3) / 2;
+
+    visualizers.drums.setBounds(padding, padding, halfWidth, halfHeight);
+    visualizers.vocals.setBounds(padding * 2 + halfWidth, padding, halfWidth, halfHeight);
+    visualizers.bass.setBounds(padding, padding * 2 + halfHeight, halfWidth, halfHeight);
+    visualizers.highs.setBounds(padding * 2 + halfWidth, padding * 2 + halfHeight, halfWidth, halfHeight);
+}
+
+function setupControls() {
+    const startBtn = document.getElementById('start-btn');
+    const overlay = document.getElementById('start-overlay');
+    const controls = document.getElementById('controls');
+
+    startBtn.addEventListener('click', async () => {
+        const success = await audioAnalyzer.startListening();
+        if (success) {
+            isStarted = true;
+            overlay.classList.add('hidden');
+            controls.classList.remove('hidden');
+        } else {
+            alert('Failed to access microphone. Please allow microphone access and try again.');
+        }
+    });
+
+    document.getElementById('toggle-drums').addEventListener('click', () => {
+        const enabled = visualizers.drums.toggle();
+        document.getElementById('toggle-drums').style.opacity = enabled ? 1 : 0.5;
+    });
+
+    document.getElementById('toggle-vocals').addEventListener('click', () => {
+        const enabled = visualizers.vocals.toggle();
+        document.getElementById('toggle-vocals').style.opacity = enabled ? 1 : 0.5;
+    });
+
+    document.getElementById('toggle-bass').addEventListener('click', () => {
+        const enabled = visualizers.bass.toggle();
+        document.getElementById('toggle-bass').style.opacity = enabled ? 1 : 0.5;
+    });
+
+    document.getElementById('toggle-highs').addEventListener('click', () => {
+        const enabled = visualizers.highs.toggle();
+        document.getElementById('toggle-highs').style.opacity = enabled ? 1 : 0.5;
+    });
+
+    document.addEventListener('keydown', (e) => {
+        switch (e.key.toLowerCase()) {
+            case '1': visualizers.drums.toggle(); break;
+            case '2': visualizers.vocals.toggle(); break;
+            case '3': visualizers.bass.toggle(); break;
+            case '4': visualizers.highs.toggle(); break;
+            case 'd': window.DEBUG_MODE = !window.DEBUG_MODE; break;
+        }
+    });
+}
+
+function draw() {
+    const currentTime = millis();
+    deltaTime = currentTime - lastFrameTime;
+    lastFrameTime = currentTime;
+
+    background(10, 10, 15);
+
+    if (!isStarted) {
+        drawStartScreen();
+        return;
+    }
+
+    audioAnalyzer.update();
+
+    const energies = audioAnalyzer.getEnergies();
+    const peaks = audioAnalyzer.getPeaks();
+
+    visualizers.drums.update(energies.drums, peaks.drums, deltaTime);
+    visualizers.vocals.update(energies.vocals, peaks.vocals, deltaTime);
+    visualizers.bass.update(energies.bass, peaks.bass, deltaTime);
+    visualizers.highs.update(energies.highs, peaks.highs, deltaTime);
+
+    visualizers.drums.draw(window);
+    visualizers.vocals.draw(window);
+    visualizers.bass.draw(window);
+    visualizers.highs.draw(window);
+
+    memoryManager.update(currentTime);
+
+    if (window.DEBUG_MODE) {
+        drawDebugInfo(energies);
+    }
+}
+
+function drawStartScreen() {
+    const t = millis() * 0.001;
+    noStroke();
+    for (let i = 0; i < 5; i++) {
+        const alpha = 20 - i * 3;
+        const size = 100 + i * 50 + Math.sin(t + i) * 20;
+        fill(100, 100, 255, alpha);
+        ellipse(width / 2, height / 2, size, size);
+    }
+}
+
+function drawDebugInfo(energies) {
+    const debugDiv = document.getElementById('debug-info');
+    const stats = memoryManager.getStats();
+    const fps = Math.round(frameRate());
+
+    let html = `FPS: ${fps}<br>`;
+    html += `Drums: ${(energies.drums * 100).toFixed(1)}%<br>`;
+    html += `Vocals: ${(energies.vocals * 100).toFixed(1)}%<br>`;
+    html += `Bass: ${(energies.bass * 100).toFixed(1)}%<br>`;
+    html += `Highs: ${(energies.highs * 100).toFixed(1)}%<br>`;
+    if (stats.heapUsagePercent) {
+        html += `Heap: ${stats.heapUsagePercent.toFixed(1)}%<br>`;
+    }
+    html += `Particles: ${stats.pools.particles?.active || 0}<br>`;
+    debugDiv.innerHTML = html;
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    layoutVisualizers();
+}
+
+window.addEventListener('beforeunload', () => {
+    if (audioAnalyzer) {
+        audioAnalyzer.dispose();
+    }
+    for (const viz of Object.values(visualizers)) {
+        viz.dispose();
+    }
+    memoryManager.dispose();
+});
+    </script>
+</body>
+</html>
